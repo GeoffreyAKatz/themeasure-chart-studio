@@ -1,0 +1,14 @@
+# netlify.toml — build + functions config for Chart Studio
+#
+# Adjust `publish` to match your bundler's output folder:
+#   Vite            -> "dist"
+#   Create React App -> "build"
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+  functions = "netlify/functions"
+
+# Node 18+ gives the function a built-in global fetch (no node-fetch needed).
+[functions]
+  node_bundler = "esbuild"

@@ -34,7 +34,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.3"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.4"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
     accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
@@ -969,7 +969,7 @@ export default function App() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // DEPLOY: set to a current vision-capable Claude model string from your Anthropic console
-          model: "claude-sonnet-4-6", max_tokens: 1000,
+          model: "claude-sonnet-4-6", max_tokens: 2000,
           messages: [{ role: "user", content: [
             { type: "image", source: { type: "base64", media_type: imgMime || "image/png", data: imgB64 } },
             { type: "text", text: prompt },
@@ -977,7 +977,14 @@ export default function App() {
         }),
       });
       const data = await res.json();
-      const text = (data.content || []).map((i) => i.text || "").join("\n").replace(/```json|```/g, "").trim();
+      if (!res.ok || (data && (data.error || data.type === "error"))) {
+        const m = (data && data.error && data.error.message) || (data && data.message) || ("HTTP " + res.status);
+        throw new Error(m);
+      }
+      let text = (data.content || []).map((i) => i.text || "").join("\n").trim();
+      text = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+      const ja = text.indexOf("{"), jb = text.lastIndexOf("}");
+      if (ja >= 0 && jb > ja) text = text.slice(ja, jb + 1);
       const j = JSON.parse(text);
       const arche = ["line", "bar", "hbar", "stat"].includes(j.archetype) ? j.archetype : "bar";
       patch({
@@ -992,7 +999,7 @@ export default function App() {
       });
       setStep(1);
     } catch (err) {
-      setImgErr("Couldn't read that image automatically - try a clearer crop, or use Paste data / Start blank.");
+      setImgErr("Couldn't read that image: " + ((err && err.message) ? err.message : "unknown error") + " - try a clearer crop, or use Paste data / Start blank.");
     } finally {
       setImgBusy(false);
     }

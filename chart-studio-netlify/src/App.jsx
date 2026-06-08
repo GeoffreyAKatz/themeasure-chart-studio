@@ -969,7 +969,7 @@ export default function App() {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           // DEPLOY: set to a current vision-capable Claude model string from your Anthropic console
-          model: "claude-sonnet-4-20250514", max_tokens: 1000,
+          model: "claude-sonnet-4-6", max_tokens: 1000,
           messages: [{ role: "user", content: [
             { type: "image", source: { type: "base64", media_type: imgMime || "image/png", data: imgB64 } },
             { type: "text", text: prompt },

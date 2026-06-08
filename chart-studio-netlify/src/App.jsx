@@ -34,7 +34,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.4"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.5"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
     accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
@@ -510,7 +510,7 @@ const ctxLbl = { fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: 
 
 /* ============================================================
    PERSISTENCE — charts are living objects: saved, listed, reopened.
-   Uses window.storage when present; falls back to in-memory.
+   Backed by Netlify Blobs via /api/charts; falls back to in-memory when offline.
    ============================================================ */
 // DEPLOY: window.storage is the artifact store. In a standalone .zip build it is absent, so this
 // falls back to in-memory (lost on refresh). For a deployable proto, swap the fallback below to
@@ -520,11 +520,31 @@ const PREFIX = "chart:";
 // build, change this to your own proxy route, e.g. "/api/extract", which injects ANTHROPIC_API_KEY.
 const EXTRACT_ENDPOINT = "/api/extract"; // deploy-ready: served by netlify/functions/extract.mjs
 const _mem = {};
+const STORE_ENDPOINT = "/api/charts"; // Netlify Blobs-backed persistence — served by netlify/functions/charts.mjs
 const store = {
-  async list(p) { try { if (window.storage) return await window.storage.list(p, false); } catch (e) {} return { keys: Object.keys(_mem).filter((k) => k.startsWith(p)) }; },
-  async get(k) { try { if (window.storage) return await window.storage.get(k, false); } catch (e) {} return k in _mem ? { value: _mem[k] } : null; },
-  async set(k, v) { try { if (window.storage) return await window.storage.set(k, v, false); } catch (e) {} _mem[k] = v; return { value: v }; },
-  async del(k) { try { if (window.storage) return await window.storage.delete(k, false); } catch (e) {} delete _mem[k]; return { deleted: true }; },
+  async list(p) {
+    try { const r = await fetch(STORE_ENDPOINT + "?prefix=" + encodeURIComponent(p)); if (r.ok) return await r.json(); } catch (e) {}
+    return { keys: Object.keys(_mem).filter((k) => k.startsWith(p)) };
+  },
+  // one request returns every {key,value} under a prefix (keeps the library load to a single call)
+  async all(p) {
+    try { const r = await fetch(STORE_ENDPOINT + "?prefix=" + encodeURIComponent(p) + "&full=1"); if (r.ok) { const d = await r.json(); if (Array.isArray(d.items)) return d.items; } } catch (e) {}
+    return Object.keys(_mem).filter((k) => k.startsWith(p)).map((k) => ({ key: k, value: _mem[k] }));
+  },
+  async get(k) {
+    try { const r = await fetch(STORE_ENDPOINT + "?key=" + encodeURIComponent(k)); if (r.ok) { const d = await r.json(); return d && d.value != null ? { value: d.value } : null; } } catch (e) {}
+    return k in _mem ? { value: _mem[k] } : null;
+  },
+  async set(k, v) {
+    _mem[k] = v;
+    try { const r = await fetch(STORE_ENDPOINT, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: k, value: v }) }); if (r.ok) return await r.json(); } catch (e) {}
+    return { value: v };
+  },
+  async del(k) {
+    delete _mem[k];
+    try { const r = await fetch(STORE_ENDPOINT + "?key=" + encodeURIComponent(k), { method: "DELETE" }); if (r.ok) return await r.json(); } catch (e) {}
+    return { deleted: true };
+  },
 };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const now = () => Date.now();
@@ -735,10 +755,9 @@ export default function App() {
   const [actBusy, setActBusy] = useState(null); // "<id>:edit" | "<id>:dup" while a library action runs
 
   const refresh = async () => {
-    const res = await store.list(PREFIX);
-    const keys = (res && res.keys) || [];
+    const items = await store.all(PREFIX);
     const out = [];
-    for (const k of keys) { const r = await store.get(k); if (r && r.value) { try { out.push(JSON.parse(r.value)); } catch (e) {} } }
+    for (const it of items) { if (it && it.value) { try { out.push(JSON.parse(it.value)); } catch (e) {} } }
     out.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
     setCharts(out);
   };

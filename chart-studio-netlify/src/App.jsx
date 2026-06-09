@@ -4,6 +4,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
 } from "recharts";
 import { Download, Copy, Check } from "lucide-react";
+import Papa from "papaparse";
 
 /* ============================================================
    BRAND TOKENS  —  the single swap point.
@@ -34,7 +35,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.5"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.6"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
     accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
@@ -144,6 +145,27 @@ function detectUnit(headers, matrix, cols) {
   if (/%/.test(s)) return "%";
   if (/\bx\b|×/i.test(s)) return "x";
   return "";
+}
+// pick the right chart archetype from the data's shape (no AI needed for clean tabular data)
+function classifyArchetype(headers, matrix, labelCol, seriesCols) {
+  const rows = matrix.filter((r) => String(r[labelCol] == null ? "" : r[labelCol]).trim() !== "");
+  const n = rows.length;
+  const sers = (seriesCols || []).filter((c) => c !== labelCol);
+  if (n <= 1 && sers.length <= 1) return "stat";
+  const labels = rows.map((r) => String(r[labelCol] == null ? "" : r[labelCol]).trim());
+  const isTime = (x) => /^(19|20)\d{2}$/.test(x) || /\b(19|20)\d{2}\b/.test(x)
+    || /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(x)
+    || /^q[1-4]\b/i.test(x) || /^\d{4}-\d{1,2}/.test(x);
+  const timeShare = labels.length ? labels.filter(isTime).length / labels.length : 0;
+  if (timeShare >= 0.6) return "line";
+  if (sers.length === 1) {
+    const vals = rows.map((r) => toNum(r[sers[0]])).filter((v) => !isNaN(v));
+    const sortedDesc = vals.length >= 3 && vals.every((v, i) => i === 0 || v <= vals[i - 1]);
+    const longLabels = labels.some((l) => l.length > 12);
+    if (n >= 5 || sortedDesc || longLabels) return "hbar";
+    return "bar";
+  }
+  return "bar";
 }
 
 /* ---- custom tooltip themed to brand ---- */
@@ -743,6 +765,7 @@ export default function App() {
   const [labelCol, setLabelCol] = useState(0);
   const [seriesCols, setSeriesCols] = useState([]);
   const [impUnit, setImpUnit] = useState("");
+  const [dataErr, setDataErr] = useState("");
   const [createMode, setCreateMode] = useState("paste"); // paste | image | blank
   const [imgSrc, setImgSrc] = useState(""); const [imgB64, setImgB64] = useState("");
   const [imgMime, setImgMime] = useState(""); const [imgBusy, setImgBusy] = useState(false); const [imgErr, setImgErr] = useState("");
@@ -787,12 +810,44 @@ export default function App() {
   const addRow = () => { const b = { label: "New" }; draft.series.forEach((s) => (b[s] = 0)); patch({ rows: [...draft.rows, b] }); };
   const removeRow = (ri) => patch({ rows: draft.rows.filter((_, i) => i !== ri) });
 
-  const parseImport = () => {
-    const p = parseTable(importText); if (!p) return;
+  const applyParsed = (p) => {
+    if (!p || !p.headers.length || !p.matrix.length) { setDataErr("No rows found — needs a header row plus at least one data row."); return; }
     let lbl = p.headers.findIndex((_, c) => !isNumericCol(p.matrix, c)); if (lbl < 0) lbl = 0;
     const cols = p.headers.map((_, c) => c).filter((c) => c !== lbl);
     const sers = cols.filter((c) => isNumericCol(p.matrix, c));
-    setParsed(p); setLabelCol(lbl); setSeriesCols(sers.length ? sers : cols); setImpUnit(detectUnit(p.headers, p.matrix, sers));
+    setDataErr(""); setParsed(p); setLabelCol(lbl); setSeriesCols(sers.length ? sers : cols); setImpUnit(detectUnit(p.headers, p.matrix, sers));
+  };
+  const onDataFile = async (e) => {
+    const file = e.target.files && e.target.files[0]; e.target.value = ""; if (!file) return;
+    const name = (file.name || "").toLowerCase();
+    setDataErr("");
+    try {
+      let headers = [], matrix = [];
+      if (name.endsWith(".xlsx") || name.endsWith(".xls")) {
+        const XLSX = await import("xlsx");
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, blankrows: false, defval: "" });
+        const arr = aoa.filter((r) => r.some((c) => String(c).trim() !== ""));
+        headers = (arr[0] || []).map((c) => String(c).trim());
+        matrix = arr.slice(1).map((r) => headers.map((_, i) => String(r[i] == null ? "" : r[i]).trim()));
+      } else {
+        const txt = await file.text();
+        const res = Papa.parse(txt, { skipEmptyLines: true });
+        const arr = (res.data || []).filter((r) => Array.isArray(r) && r.some((c) => String(c).trim() !== ""));
+        headers = (arr[0] || []).map((c) => String(c).trim());
+        matrix = arr.slice(1).map((r) => headers.map((_, i) => String(r[i] == null ? "" : r[i]).trim()));
+      }
+      applyParsed({ headers, matrix, delim: "," });
+    } catch (err) {
+      setDataErr("Couldn't read that file: " + ((err && err.message) ? err.message : "unknown error"));
+    }
+  };
+  const parseImport = () => {
+    const p = parseTable(importText);
+    if (!p) { setDataErr("Need a header row plus at least one data row."); return; }
+    applyParsed(p);
   };
   const toggleSeries = (c) => setSeriesCols((s) => s.includes(c) ? s.filter((x) => x !== c) : [...s, c]);
   const buildFromImport = () => {
@@ -802,8 +857,14 @@ export default function App() {
     const rows = parsed.matrix.filter((r) => (r[labelCol] ?? "") !== "").map((r) => {
       const o = { label: r[labelCol] }; sers.forEach((c, i) => { const n = toNum(r[c]); o[names[i]] = isNaN(n) ? 0 : n; }); return o;
     });
-    if (rows.length) patch({ rows, series: names, unit: impUnit });
-    setParsed(null); setImportText(""); setStep(1);
+    if (!rows.length) return;
+    const arche = classifyArchetype(parsed.headers, parsed.matrix, labelCol, sers);
+    if (arche === "stat") {
+      patch({ archetype: "stat", statValue: String(rows[0][names[0]]), statLabel: names[0], unit: impUnit });
+    } else {
+      patch({ archetype: arche, rows, series: names, unit: impUnit });
+    }
+    setParsed(null); setImportText(""); setDataErr(""); setStep(1);
   };
 
   const embed = useMemo(() => draft ? buildEmbed(draft.archetype, draft, palOf(draft)) : "", [draft]);
@@ -1041,7 +1102,17 @@ export default function App() {
             <div style={{ fontSize: 12, color: BRAND.muted, marginBottom: 10, lineHeight: 1.5 }}>Paste from the iSpot / Tubular export — tab or comma separated, first row = headers. Source data beats OCR.</div>
             <textarea value={importText} onChange={(e) => setImportText(e.target.value)} rows={6} placeholder={"Year\tAd spend\n2022\t75.7\n2023\t61.7"} style={taStyle} />
             {!parsed ? (
-              <button onClick={parseImport} disabled={!importText.trim()} style={{ ...miniBtn, background: importText.trim() ? BRAND.ink : BRAND.grid, color: "#fff", border: "none", marginTop: 8 }}>Parse →</button>
+              <div style={{ marginTop: 8 }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <button onClick={parseImport} disabled={!importText.trim()} style={{ ...miniBtn, background: importText.trim() ? BRAND.ink : BRAND.grid, color: "#fff", border: "none" }}>Parse →</button>
+                  <span style={{ fontSize: 11, color: BRAND.muted }}>or</span>
+                  <label style={{ ...miniBtn, cursor: "pointer", display: "inline-flex", background: "#fff", color: BRAND.ink, border: `1px solid ${BRAND.grid}` }}>
+                    Upload CSV / Excel
+                    <input type="file" accept=".csv,.tsv,.xlsx,.xls,text/csv" onChange={onDataFile} style={{ display: "none" }} />
+                  </label>
+                </div>
+                {dataErr && <div style={{ marginTop: 8, fontSize: 12, color: "#B23B3B" }}>{dataErr}</div>}
+              </div>
             ) : (
               <div style={{ marginTop: 10 }}>
                 <div style={{ color: BRAND.muted, fontSize: 11, marginBottom: 6 }}>Detected {parsed.matrix.length} rows · {parsed.headers.length} columns. Confirm the mapping:</div>

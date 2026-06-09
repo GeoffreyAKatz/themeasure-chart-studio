@@ -35,7 +35,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.7"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.8"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
     accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
@@ -391,6 +391,7 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
   }
   var va = cc.options.indexAxis === "y" ? "x" : "y";
   cc.options.scales[va].ticks.callback = function(value){ return fmtTick(value); };
+  if (cc.options.indexAxis === "y") cc.options.scales.y.ticks.autoSkip = false;
   cc.options.plugins = cc.options.plugins || {};
   cc.options.plugins.tooltip = Object.assign({}, cc.options.plugins.tooltip, { callbacks: { label: function(ctx){ var val = fmtTick(ctx.parsed[va]); return ctx.dataset.label ? ctx.dataset.label + ": " + val : val; } } });
   new Chart(document.getElementById("c"), cc);

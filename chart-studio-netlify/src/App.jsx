@@ -35,7 +35,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.6"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.7"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
     accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
@@ -378,7 +378,24 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
     <span>${cfg.source}</span><svg height="11" viewBox="${LOGO_VIEWBOX}" fill="${pal.ink}"><path fill-rule="nonzero" d="${LOGO_PATH}"/></svg>
   </div>
 </div>
-<script>new Chart(document.getElementById("c"), ${JSON.stringify(config)});<\/script>`;
+<script>
+(function(){
+  var cc = ${JSON.stringify(config)};
+  var unit = ${JSON.stringify(cfg.unit || "")};
+  function fmtTick(n){
+    var v = (typeof n === "number" && isFinite(n)) ? (Number.isInteger(n) ? n : n.toFixed(1)) : n;
+    if (unit === "%") return v + "%";
+    if (unit === "x") return v + "x";
+    if (unit === "$M") return "$" + v + "M";
+    return "" + v;
+  }
+  var va = cc.options.indexAxis === "y" ? "x" : "y";
+  cc.options.scales[va].ticks.callback = function(value){ return fmtTick(value); };
+  cc.options.plugins = cc.options.plugins || {};
+  cc.options.plugins.tooltip = Object.assign({}, cc.options.plugins.tooltip, { callbacks: { label: function(ctx){ var val = fmtTick(ctx.parsed[va]); return ctx.dataset.label ? ctx.dataset.label + ": " + val : val; } } });
+  new Chart(document.getElementById("c"), cc);
+})();
+<\/script>`;
 }
 
 function buildEmbed(type, cfg, pal = PALETTES.cream) {

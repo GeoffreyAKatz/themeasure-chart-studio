@@ -35,7 +35,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.8"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.10"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
     accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
@@ -152,6 +152,7 @@ function classifyArchetype(headers, matrix, labelCol, seriesCols) {
   const n = rows.length;
   const sers = (seriesCols || []).filter((c) => c !== labelCol);
   if (n <= 1 && sers.length <= 1) return "stat";
+  if (sers.length >= 2) return "stacked"; // multiple numeric series -> stacked composition
   const labels = rows.map((r) => String(r[labelCol] == null ? "" : r[labelCol]).trim());
   const isTime = (x) => /^(19|20)\d{2}$/.test(x) || /\b(19|20)\d{2}\b/.test(x)
     || /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(x)
@@ -346,28 +347,39 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
 <\/script>`;
   }
   const labels = cfg.rows.map((r) => r.label);
+  const isStacked = type === "stacked";
+  const horiz = isStacked ? cfg.orient === "h" : type === "hbar";
+  const pct = isStacked && !!cfg.pct;
   const single = cfg.series.length === 1 && (type === "bar" || type === "hbar");
   const ramp = single ? valueRamp(pal, cfg.rows.map((r) => r[cfg.series[0]])) : null;
-  const datasets = cfg.series.map((s, i) => ({
-    label: s, data: cfg.rows.map((r) => toNum(r[s])),
+  const totals = cfg.rows.map((r) => cfg.series.reduce((acc, ser) => acc + toNum(r[ser]), 0));
+  const datasets = cfg.series.map((sname, i) => ({
+    label: sname,
+    data: cfg.rows.map((r, ri) => { const v = toNum(r[sname]); return pct ? (totals[ri] ? (v / totals[ri]) * 100 : 0) : v; }),
+    raw: cfg.rows.map((r) => toNum(r[sname])),
     backgroundColor: single ? ramp : pal.series[i % pal.series.length],
-    borderColor: single ? ramp : pal.series[i % pal.series.length],
-    borderWidth: type === "line" ? 2.5 : 0, borderRadius: type === "line" ? 0 : 4,
+    borderColor: isStacked ? pal.paper : (single ? ramp : pal.series[i % pal.series.length]),
+    borderWidth: type === "line" ? 2.5 : (isStacked ? 1.5 : 0),
+    borderRadius: type === "line" ? 0 : (isStacked ? 2 : 4),
+    stack: isStacked ? "a" : undefined,
     tension: 0.35, pointRadius: 3, fill: false,
   }));
   const cjsType = type === "line" ? "line" : "bar";
-  const indexAxis = type === "hbar" ? "y" : "x";
+  const indexAxis = horiz ? "y" : "x";
+  const inlineMode = isStacked ? "stacked" : (single ? "single" : "off");
   const config = { type: cjsType, data: { labels, datasets }, options: {
     indexAxis, responsive: true, maintainAspectRatio: false,
-    plugins: { legend: { display: cfg.series.length > 1, labels: { color: pal.ink, font: { family: "system-ui, sans-serif" } } } },
+    layout: { padding: { top: 8, right: 8 } },
+    plugins: { legend: { display: cfg.series.length > 1, position: "top", align: "start", labels: { color: pal.ink, font: { family: "system-ui, sans-serif" }, boxWidth: 12, boxHeight: 12, padding: 14 } } },
     scales: {
-      x: { grid: { display: indexAxis === "y" }, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
-      y: { grid: { color: pal.grid }, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
+      x: { stacked: isStacked, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
+      y: { stacked: isStacked, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
     },
   } };
   return `<!doctype html><meta charset="utf-8">
 <style>html,body{height:100%;margin:0}*{box-sizing:border-box}</style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"><\/script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"><\/script>
 <div style="font-family:${sansEmbed};background:${pal.paper};border:1px solid ${pal.grid};border-radius:12px;height:100%;display:flex;flex-direction:column;padding:3.5% 4%">
   <div style="border-top:3px solid ${pal.accent};padding-top:10px;margin-bottom:6px">
     <div style="font-family:${sansEmbed};font-size:clamp(14px,2.5vw,20px);color:${pal.ink};font-weight:700">${cfg.title}</div>
@@ -382,6 +394,12 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
 (function(){
   var cc = ${JSON.stringify(config)};
   var unit = ${JSON.stringify(cfg.unit || "")};
+  var stacked = ${JSON.stringify(isStacked)};
+  var horiz = ${JSON.stringify(horiz)};
+  var pct = ${JSON.stringify(pct)};
+  var inline = ${JSON.stringify(inlineMode)};
+  var ink = ${JSON.stringify(pal.ink)};
+  var grid = ${JSON.stringify(pal.grid)};
   function fmtTick(n){
     var v = (typeof n === "number" && isFinite(n)) ? (Number.isInteger(n) ? n : n.toFixed(1)) : n;
     if (unit === "%") return v + "%";
@@ -389,11 +407,54 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
     if (unit === "$M") return "$" + v + "M";
     return "" + v;
   }
-  var va = cc.options.indexAxis === "y" ? "x" : "y";
-  cc.options.scales[va].ticks.callback = function(value){ return fmtTick(value); };
-  if (cc.options.indexAxis === "y") cc.options.scales.y.ticks.autoSkip = false;
+  function fmtPlain(n){ return (typeof n === "number" && isFinite(n)) ? (Number.isInteger(n) ? "" + n : n.toFixed(1)) : ("" + n); }
+  function bgOf(ds, di){ var b = ds.backgroundColor; return Array.isArray(b) ? b[di] : b; }
+  function textOn(hex){ var h = String(hex).replace("#",""); var r = parseInt(h.substr(0,2),16), g = parseInt(h.substr(2,2),16), b = parseInt(h.substr(4,2),16); var L = (0.299*r + 0.587*g + 0.114*b)/255; return L > 0.6 ? ink : "#FFFFFF"; }
+  var va = horiz ? "x" : "y";
+  var ca = horiz ? "y" : "x";
+  cc.options.scales[ca].grid = { display: false };
+  cc.options.scales[ca].border = { display: true, color: grid };
+  if (horiz) cc.options.scales[ca].ticks.autoSkip = false;
+  if (stacked) {
+    cc.options.scales[va].display = false;
+    cc.options.scales[va].min = 0;
+    if (pct) cc.options.scales[va].max = 100;
+  } else {
+    cc.options.scales[va].grid = { color: grid };
+    cc.options.scales[va].ticks.callback = function(value){ return fmtTick(value); };
+  }
+  if (window.ChartDataLabels) Chart.register(ChartDataLabels);
   cc.options.plugins = cc.options.plugins || {};
-  cc.options.plugins.tooltip = Object.assign({}, cc.options.plugins.tooltip, { callbacks: { label: function(ctx){ var val = fmtTick(ctx.parsed[va]); return ctx.dataset.label ? ctx.dataset.label + ": " + val : val; } } });
+  if (inline === "off") {
+    cc.options.plugins.datalabels = { display: false };
+  } else {
+    cc.options.plugins.datalabels = {
+      clamp: true,
+      color: function(c){ return textOn(bgOf(c.dataset, c.dataIndex)); },
+      font: function(c){ return { family: "-apple-system, system-ui, sans-serif", weight: inline === "single" ? "800" : "700", size: inline === "single" ? 20 : 13 }; },
+      anchor: inline === "stacked" ? "center" : "end",
+      align: inline === "stacked" ? "center" : "start",
+      offset: inline === "stacked" ? 0 : 8,
+      formatter: function(value, c){
+        var raw = c.dataset.raw ? c.dataset.raw[c.dataIndex] : value;
+        if (inline === "stacked") return pct ? (Math.round(value) + "%") : fmtPlain(raw);
+        return fmtTick(raw);
+      },
+      display: function(c){
+        var el = c.chart.getDatasetMeta(c.datasetIndex).data[c.dataIndex];
+        if (!el) return false;
+        var len = horiz ? Math.abs(el.x - el.base) : Math.abs(el.base - el.y);
+        if (inline === "single") return len >= (horiz ? 64 : 30);
+        return len >= 16;
+      }
+    };
+  }
+  cc.options.plugins.tooltip = { callbacks: { label: function(ctx){
+    var raw = ctx.dataset.raw ? ctx.dataset.raw[ctx.dataIndex] : ctx.parsed[va];
+    var t = fmtTick(raw);
+    if (stacked && pct) t += " (" + Math.round(ctx.parsed[va]) + "%)";
+    return ctx.dataset.label ? ctx.dataset.label + ": " + t : t;
+  } } };
   new Chart(document.getElementById("c"), cc);
 })();
 <\/script>`;
@@ -413,6 +474,7 @@ const TYPES = [
   { id: "bar", label: "Comparison" },
   { id: "hbar", label: "Ranking" },
   { id: "stat", label: "Big stat" },
+  { id: "stacked", label: "Stacked" },
 ];
 
 /* ============================================================
@@ -661,6 +723,7 @@ const ARCHE = [
   { id: "bar", label: "Comparison", hint: "values across categories" },
   { id: "hbar", label: "Ranking", hint: "ordered, largest first" },
   { id: "stat", label: "Single number", hint: "one figure that matters" },
+  { id: "stacked", label: "Stacked", hint: "parts of a whole, over time" },
 ];
 
 function Spinner({ label }) {
@@ -1023,6 +1086,34 @@ export default function App() {
     );
   }
 
+  function typePicker() {
+    const cur = draft.archetype;
+    const orient = draft.orient || "v";
+    return (
+      <div style={{ marginBottom: 14 }}>
+        <div style={ctxLbl}>CHART TYPE</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+          {TYPES.map((t) => (
+            <button key={t.id} onClick={() => patch({ archetype: t.id })} style={{ padding: "6px 11px", borderRadius: 7, fontSize: 12.5, cursor: "pointer", fontFamily: BRAND.fontBody,
+              border: `1px solid ${cur === t.id ? BRAND.ink : BRAND.grid}`, background: cur === t.id ? BRAND.ink : "#fff", color: cur === t.id ? "#fff" : BRAND.ink, fontWeight: cur === t.id ? 700 : 500 }}>{t.label}</button>
+          ))}
+        </div>
+        {cur === "stacked" && (
+          <div style={{ display: "flex", gap: 18, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <span style={{ fontSize: 11.5, color: BRAND.muted }}>Orientation</span>
+              {[["v", "Vertical"], ["h", "Horizontal"]].map(([v, lbl]) => (
+                <button key={v} onClick={() => patch({ orient: v })} style={{ ...miniBtn, background: orient === v ? BRAND.ink : "#fff", color: orient === v ? "#fff" : BRAND.ink, border: `1px solid ${orient === v ? BRAND.ink : BRAND.grid}` }}>{lbl}</button>
+              ))}
+            </div>
+            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: BRAND.ink, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!draft.pct} onChange={(e) => patch({ pct: e.target.checked })} /> Show as 100% (share)
+            </label>
+          </div>
+        )}
+      </div>
+    );
+  }
   function framingFields() {
     return (
       <>
@@ -1214,6 +1305,7 @@ export default function App() {
           {draft.provenance ? (
             <div style={{ fontSize: 11.5, color: "#8a5a00", background: "#FBF3DF", border: "1px solid #EAD9A8", borderRadius: 7, padding: "7px 10px", marginBottom: 12, lineHeight: 1.45 }}>{draft.provenance}</div>
           ) : null}
+          {typePicker()}
           {framingFields()}
           <div style={{ marginTop: 14 }} />
           {dataEditor()}

@@ -35,7 +35,7 @@ const BRAND = {
    CHART PALETTES — themeable colors per chart (card bg + chart
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
-const VERSION = "v01.10"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+const VERSION = "v01.11"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
 /* Each palette carries three series-color sets (modes):
    series (categorical, default) — distinct muted hues, harmonized to the red
    hero — series 1 pops in accent, the rest are neutrals (one line is the story)
@@ -1198,6 +1198,72 @@ export default function App() {
     );
   }
 
+  // Value labels live in Review, next to the data they annotate.
+  function valueLabelControls() {
+    if (draft.archetype === "stat") return null;
+          const vp = palOf(draft);
+          const on = !!draft.showValues, size = draft.valueSize || 12;
+          return (
+            <>
+              <div style={panelTitle}>Value labels</div>
+              <div style={{ fontSize: 12, color: BRAND.muted, marginBottom: 10, lineHeight: 1.5 }}>Prints the number on every bar and point — in the preview, the embed and the PNG alike. Labels sit outside the bar and the plot reserves room for them, so nothing clips.</div>
+              <button onClick={() => patch({ showValues: !on })} style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 9,
+                border: `1px solid ${on ? BRAND.ink : BRAND.grid}`, background: "#fff", fontFamily: BRAND.fontBody, cursor: "pointer", marginBottom: on ? 10 : 18 }}>
+                <span style={{ width: 34, height: 20, borderRadius: 10, background: on ? BRAND.ink : "#DCD6CC", position: "relative", flexShrink: 0, transition: "background .15s" }}>
+                  <span style={{ position: "absolute", top: 2, left: on ? 16 : 2, width: 16, height: 16, borderRadius: 8, background: "#fff", transition: "left .15s" }} />
+                </span>
+                <span style={{ fontWeight: 700, fontSize: 13, color: BRAND.ink }}>Show values</span>
+              </button>
+              {on && (
+                <div style={{ marginBottom: 18 }}>
+                  <div style={impRow}><span style={impLbl}>Size</span>
+                    <input type="range" min={8} max={24} step={1} value={size}
+                      onChange={(e) => patch({ valueSize: +e.target.value })} style={{ flex: 1, accentColor: BRAND.accent }} />
+                    <span style={{ width: 34, textAlign: "right", fontSize: 12, color: BRAND.muted, fontVariantNumeric: "tabular-nums" }}>{size}px</span>
+                  </div>
+                  <div style={impRow}><span style={impLbl}>Color</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1, flexWrap: "wrap" }}>
+                      {VALUE_COLORS.map((c) => {
+                        const act = (draft.valueColor || "auto") === c.id;
+                        return (
+                          <button key={c.id} onClick={() => patch({ valueColor: c.id })} title={c.hint || c.name} style={{
+                            display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 8px", borderRadius: 6, cursor: "pointer",
+                            fontSize: 12, fontFamily: BRAND.fontBody, background: "#fff",
+                            border: `1px solid ${act ? BRAND.ink : BRAND.grid}`, color: act ? BRAND.ink : BRAND.muted, fontWeight: act ? 700 : 400 }}>
+                            <span style={{ width: 10, height: 10, borderRadius: 2, flexShrink: 0, border: `1px solid ${BRAND.grid}`,
+                              background: c.id === "auto" ? `linear-gradient(135deg, ${vp.ink} 50%, ${vp.paper} 50%)` : (vp[c.id] || vp.ink) }} />
+                            {c.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div style={impRow}><span style={impLbl}>Placement</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1 }}>
+                      {VALUE_POS.map((p) => {
+                        const act = (draft.valuePos || "auto") === p.id;
+                        return (
+                          <button key={p.id} onClick={() => patch({ valuePos: p.id })} style={{
+                            padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontFamily: BRAND.fontBody,
+                            border: `1px solid ${act ? BRAND.ink : BRAND.grid}`, background: act ? BRAND.ink : "#fff",
+                            color: act ? "#fff" : BRAND.muted, fontWeight: act ? 700 : 400 }}>{p.name}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: BRAND.muted, marginTop: 6, lineHeight: 1.5 }}>
+                    {(draft.valuePos || "auto") === "inside"
+                      ? "Inside: Auto color flips to white on dark fills so the number stays readable. Lines always label above the point."
+                      : "Outside is the safe default — use Inside only when the bars are long enough to hold the number."}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+
+  }
+
   function framingFields() {
     return (
       <>
@@ -1392,6 +1458,7 @@ export default function App() {
           {framingFields()}
           <div style={{ fontSize: 11, color: BRAND.muted, marginTop: 8, lineHeight: 1.5 }}>Click a column heading to rename that series — the legend, tooltip, embed and PNG all follow.</div>
           {dataEditor()}
+          <div style={{ marginTop: 20 }}>{valueLabelControls()}</div>
         </>
       );
     }
@@ -1418,68 +1485,6 @@ export default function App() {
             </button>
           ))}
         </div>
-        {draft.archetype !== "stat" && (() => {
-          const vp = palOf(draft);
-          const on = !!draft.showValues, size = draft.valueSize || 12;
-          return (
-            <>
-              <div style={panelTitle}>Value labels</div>
-              <div style={{ fontSize: 12, color: BRAND.muted, marginBottom: 10, lineHeight: 1.5 }}>Prints the number on every bar and point — in the preview, the embed and the PNG alike. Labels sit outside the bar and the plot reserves room for them, so nothing clips.</div>
-              <button onClick={() => patch({ showValues: !on })} style={{
-                display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 9,
-                border: `1px solid ${on ? BRAND.ink : BRAND.grid}`, background: "#fff", fontFamily: BRAND.fontBody, cursor: "pointer", marginBottom: on ? 10 : 18 }}>
-                <span style={{ width: 34, height: 20, borderRadius: 10, background: on ? BRAND.ink : "#DCD6CC", position: "relative", flexShrink: 0, transition: "background .15s" }}>
-                  <span style={{ position: "absolute", top: 2, left: on ? 16 : 2, width: 16, height: 16, borderRadius: 8, background: "#fff", transition: "left .15s" }} />
-                </span>
-                <span style={{ fontWeight: 700, fontSize: 13, color: BRAND.ink }}>Show values</span>
-              </button>
-              {on && (
-                <div style={{ marginBottom: 18 }}>
-                  <div style={impRow}><span style={impLbl}>Size</span>
-                    <input type="range" min={8} max={24} step={1} value={size}
-                      onChange={(e) => patch({ valueSize: +e.target.value })} style={{ flex: 1, accentColor: BRAND.accent }} />
-                    <span style={{ width: 34, textAlign: "right", fontSize: 12, color: BRAND.muted, fontVariantNumeric: "tabular-nums" }}>{size}px</span>
-                  </div>
-                  <div style={impRow}><span style={impLbl}>Color</span>
-                    <div style={{ display: "flex", gap: 6, flex: 1, flexWrap: "wrap" }}>
-                      {VALUE_COLORS.map((c) => {
-                        const act = (draft.valueColor || "auto") === c.id;
-                        return (
-                          <button key={c.id} onClick={() => patch({ valueColor: c.id })} title={c.hint || c.name} style={{
-                            display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 8px", borderRadius: 6, cursor: "pointer",
-                            fontSize: 12, fontFamily: BRAND.fontBody, background: "#fff",
-                            border: `1px solid ${act ? BRAND.ink : BRAND.grid}`, color: act ? BRAND.ink : BRAND.muted, fontWeight: act ? 700 : 400 }}>
-                            <span style={{ width: 10, height: 10, borderRadius: 2, flexShrink: 0, border: `1px solid ${BRAND.grid}`,
-                              background: c.id === "auto" ? `linear-gradient(135deg, ${vp.ink} 50%, ${vp.paper} 50%)` : (vp[c.id] || vp.ink) }} />
-                            {c.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div style={impRow}><span style={impLbl}>Placement</span>
-                    <div style={{ display: "flex", gap: 6, flex: 1 }}>
-                      {VALUE_POS.map((p) => {
-                        const act = (draft.valuePos || "auto") === p.id;
-                        return (
-                          <button key={p.id} onClick={() => patch({ valuePos: p.id })} style={{
-                            padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontFamily: BRAND.fontBody,
-                            border: `1px solid ${act ? BRAND.ink : BRAND.grid}`, background: act ? BRAND.ink : "#fff",
-                            color: act ? "#fff" : BRAND.muted, fontWeight: act ? 700 : 400 }}>{p.name}</button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                  <div style={{ fontSize: 11, color: BRAND.muted, marginTop: 6, lineHeight: 1.5 }}>
-                    {(draft.valuePos || "auto") === "inside"
-                      ? "Inside: Auto color flips to white on dark fills so the number stays readable. Lines always label above the point."
-                      : "Outside is the safe default — use Inside only when the bars are long enough to hold the number."}
-                  </div>
-                </div>
-              )}
-            </>
-          );
-        })()}
         {(draft.series || []).length > 1 && (
           <>
             <div style={panelTitle}>Series colors</div>

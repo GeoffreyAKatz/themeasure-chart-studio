@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   ResponsiveContainer, LineChart, Line, BarChart, Bar,
-  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell,
+  XAxis, YAxis, CartesianGrid, Tooltip, Legend, Cell, LabelList,
 } from "recharts";
 import { Download, Copy, Check } from "lucide-react";
 import Papa from "papaparse";
@@ -36,15 +36,39 @@ const BRAND = {
    colors). Fonts/logo stay in BRAND; only colors swap here.
    ============================================================ */
 const VERSION = "v01.10"; // build/deploy version — increment minor (v01.1, v01.2 …) each .zip build until v02 is declared
+/* Each palette carries three series-color sets (modes):
+   series (categorical, default) — distinct muted hues, harmonized to the red
+   hero — series 1 pops in accent, the rest are neutrals (one line is the story)
+   grouped — adjacent pairs share a hue family (1+2 = reds, 3+4 = teals, 5+6 = golds) */
 const PALETTES = {
   white: { name: "White", paper: "#FFFFFF", ink: "#16130F", grid: "#ECEAE6", muted: "#736E66",
-    accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
+    accent: "#E8412B",
+    series: ["#E8412B", "#33707F", "#B8862B", "#8C6A52", "#4E7A5A"],
+    hero: ["#E8412B", "#14110F", "#736E66", "#B3ACA1", "#D0C9BE"],
+    grouped: ["#E8412B", "#F29B84", "#1E5F74", "#7FAEB9", "#B8862B", "#E0C285"] },
   cream: { name: "Cream", paper: "#FBFAF7", ink: "#14110F", grid: "#E7E2DA", muted: "#8A8175",
-    accent: "#E8412B", series: ["#E8412B", "#1E5F74", "#E6A100", "#5A4FCF", "#2E9E6B"] },
+    accent: "#E8412B",
+    series: ["#E8412B", "#33707F", "#B8862B", "#8C6A52", "#4E7A5A"],
+    hero: ["#E8412B", "#14110F", "#736E66", "#B3ACA1", "#D0C9BE"],
+    grouped: ["#E8412B", "#F29B84", "#1E5F74", "#7FAEB9", "#B8862B", "#E0C285"] },
   slate: { name: "Space gray", paper: "#21262C", ink: "#F4F2EE", grid: "#39414A", muted: "#9BA3AD",
-    accent: "#FF6A4D", series: ["#FF6A4D", "#5BC0DE", "#F2C14E", "#9B8CFF", "#5FD6A0"] },
+    accent: "#FF6A4D",
+    series: ["#FF6A4D", "#6FAABB", "#D9A94E", "#B08D6E", "#7FB08A"],
+    hero: ["#FF6A4D", "#F4F2EE", "#9BA3AD", "#6B747E", "#4A535D"],
+    grouped: ["#FF6A4D", "#FFA894", "#5BC0DE", "#9AD8E8", "#D9A94E", "#EDCB8B"] },
 };
 const palOf = (c) => PALETTES[(c && c.palette) || "white"] || PALETTES.white;
+/* Series-color mode of a chart cfg → the color array to cycle. Only matters
+   for 2+ series; single-series bars keep the value ramp, big stat the accent. */
+const SERIES_MODES = [
+  { id: "categorical", name: "Categorical", desc: "Distinct muted hues — general use" },
+  { id: "hero", name: "Hero", desc: "First series pops; the rest recede" },
+  { id: "grouped", name: "Grouped", desc: "Adjacent pairs share a hue family" },
+];
+const seriesColorsOf = (pal, cfg) => {
+  const m = (cfg && cfg.colorMode) || "categorical";
+  return (m === "hero" && pal.hero) || (m === "grouped" && pal.grouped) || pal.series;
+};
 
 /* ---- font loading (swap point: drop in your licensed fonts) ---- */
 function useBrandFonts() {
@@ -152,7 +176,6 @@ function classifyArchetype(headers, matrix, labelCol, seriesCols) {
   const n = rows.length;
   const sers = (seriesCols || []).filter((c) => c !== labelCol);
   if (n <= 1 && sers.length <= 1) return "stat";
-  if (sers.length >= 2) return "stacked"; // multiple numeric series -> stacked composition
   const labels = rows.map((r) => String(r[labelCol] == null ? "" : r[labelCol]).trim());
   const isTime = (x) => /^(19|20)\d{2}$/.test(x) || /\b(19|20)\d{2}\b/.test(x)
     || /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i.test(x)
@@ -202,8 +225,64 @@ function valueRamp(pal, values) {
   return nums.map((v) => mixHex(pal.series[0], pal.paper, (1 - (v - min) / span) * 0.6));
 }
 
+/* ---- VALUE LABELS ------------------------------------------------
+   One settings object, three renderers (preview / embed / PNG) read it
+   so the number printed on a bar is identical in all three.
+   Placement is "outside the bar end" by default and the plot reserves
+   headroom for it, so a tall bar's label can never clip or collide.
+   ------------------------------------------------------------------ */
+const VALUE_COLORS = [
+  { id: "auto", name: "Auto", hint: "ink outside, white on dark fills" },
+  { id: "ink", name: "Ink" },
+  { id: "muted", name: "Muted" },
+  { id: "accent", name: "Accent" },
+  { id: "paper", name: "Paper" },
+];
+const VALUE_POS = [{ id: "auto", name: "Outside" }, { id: "inside", name: "Inside" }];
+function lumHex(hex) { try { const c = hexToRgb(hex); return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255; } catch (e) { return 1; } }
+function vlOpts(cfg, pal) {
+  const key = cfg.valueColor || "auto";
+  return {
+    on: !!cfg.showValues,
+    size: Math.max(8, Math.min(28, +cfg.valueSize || 12)),
+    inside: (cfg.valuePos || "auto") === "inside",
+    fixed: key === "auto" ? null : (pal[key] || pal.ink),
+  };
+}
+function vlFill(o, pal, barFill) {
+  if (o.fixed) return o.fixed;
+  if (!o.inside) return pal.ink;
+  return lumHex(barFill || pal.paper) < 0.62 ? "#FFFFFF" : pal.ink;
+}
+
 function ChartCard({ type, cfg, pal = PALETTES.cream }) {
   const axisStyle = { fontFamily: BRAND.fontBody, fontSize: 12, fill: pal.muted, fontVariantNumeric: "tabular-nums" };
+  const sc = seriesColorsOf(pal, cfg);
+  const V = vlOpts(cfg, pal);
+  // bar/hbar label renderer. dir "right" = horizontal bars, "up" = vertical bars.
+  const barLabel = (colorAt, dir) => (p) => {
+    const { x, y, width, height, value, index } = p;
+    if (value == null || value === "" || !isFinite(value)) return null;
+    const col = vlFill(V, pal, colorAt(index));
+    let tx, ty, anchor = "middle", baseline = "auto";
+    if (dir === "right") {
+      ty = y + height / 2; baseline = "central";
+      if (V.inside) { tx = x + width - 7; anchor = "end"; } else { tx = x + width + 7; anchor = "start"; }
+    } else {
+      tx = x + width / 2;
+      ty = V.inside ? y + V.size + 4 : y - 6;
+    }
+    return <text x={tx} y={ty} fill={col} textAnchor={anchor} dominantBaseline={baseline}
+      fontFamily={BRAND.fontBody} fontSize={V.size} fontWeight={700}
+      style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(value, cfg.unit)}</text>;
+  };
+  const pointLabel = (p) => {
+    const { x, y, value } = p;
+    if (value == null || value === "" || !isFinite(value)) return null;
+    return <text x={x} y={y - 8} fill={V.fixed || pal.ink} textAnchor="middle"
+      fontFamily={BRAND.fontBody} fontSize={V.size} fontWeight={700}
+      style={{ fontVariantNumeric: "tabular-nums" }}>{fmt(value, cfg.unit)}</text>;
+  };
 
   const renderChart = () => {
     if (type === "stat") {
@@ -229,7 +308,7 @@ function ChartCard({ type, cfg, pal = PALETTES.cream }) {
       const colors = valueRamp(pal, cfg.rows.map((r) => r[cfg.series[0]]));
       return (
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} layout="vertical" barCategoryGap="20%" margin={{ top: 4, right: 28, left: 8, bottom: 0 }}>
+          <BarChart data={data} layout="vertical" barCategoryGap="20%" margin={{ top: 4, right: V.on && !V.inside ? 64 : 28, left: 8, bottom: 0 }}>
             <CartesianGrid horizontal={false} stroke={pal.grid} />
             <XAxis type="number" tick={axisStyle} axisLine={{ stroke: pal.grid }} tickLine={false}
               tickFormatter={(v) => fmt(v, cfg.unit)} />
@@ -237,6 +316,7 @@ function ChartCard({ type, cfg, pal = PALETTES.cream }) {
             <Tooltip content={<BrandTooltip unit={cfg.unit} pal={pal} />} cursor={{ fill: "rgba(0,0,0,0.04)" }} />
             <Bar dataKey={cfg.series[0]} radius={[0, 4, 4, 0]}>
               {cfg.rows.map((_, i) => <Cell key={i} fill={colors[i]} />)}
+              {V.on && <LabelList dataKey={cfg.series[0]} content={barLabel((i) => colors[i], "right")} />}
             </Bar>
           </BarChart>
         </ResponsiveContainer>
@@ -246,7 +326,7 @@ function ChartCard({ type, cfg, pal = PALETTES.cream }) {
       const colors = valueRamp(pal, cfg.rows.map((r) => r[cfg.series[0]]));
       return (
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={data} barCategoryGap="20%" margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+          <BarChart data={data} barCategoryGap="20%" margin={{ top: V.on && !V.inside ? V.size + 14 : 8, right: 12, left: 0, bottom: 0 }}>
             <CartesianGrid vertical={false} stroke={pal.grid} />
             <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: pal.grid }} tickLine={false} />
             <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={(v) => fmt(v, cfg.unit)} />
@@ -255,10 +335,13 @@ function ChartCard({ type, cfg, pal = PALETTES.cream }) {
             {cfg.series.length === 1 ? (
               <Bar dataKey={cfg.series[0]} radius={[4, 4, 0, 0]}>
                 {cfg.rows.map((_, i) => <Cell key={i} fill={colors[i]} />)}
+                {V.on && <LabelList dataKey={cfg.series[0]} content={barLabel((i) => colors[i], "up")} />}
               </Bar>
             ) : (
               cfg.series.map((s, i) => (
-                <Bar key={s} dataKey={s} fill={pal.series[i % pal.series.length]} radius={[4, 4, 0, 0]} />
+                <Bar key={s} dataKey={s} fill={sc[i % sc.length]} radius={[4, 4, 0, 0]}>
+                  {V.on && <LabelList dataKey={s} content={barLabel(() => sc[i % sc.length], "up")} />}
+                </Bar>
               ))
             )}
           </BarChart>
@@ -268,16 +351,18 @@ function ChartCard({ type, cfg, pal = PALETTES.cream }) {
     // line
     return (
       <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 8, right: 18, left: 0, bottom: 0 }}>
+        <LineChart data={data} margin={{ top: V.on ? V.size + 14 : 8, right: 18, left: 0, bottom: 0 }}>
           <CartesianGrid vertical={false} stroke={pal.grid} />
           <XAxis dataKey="label" tick={axisStyle} axisLine={{ stroke: pal.grid }} tickLine={false} />
           <YAxis tick={axisStyle} axisLine={false} tickLine={false} tickFormatter={(v) => fmt(v, cfg.unit)} />
           <Tooltip content={<BrandTooltip unit={cfg.unit} pal={pal} />} />
           {cfg.series.length > 1 && <Legend wrapperStyle={{ fontFamily: BRAND.fontBody, fontSize: 12 }} />}
           {cfg.series.map((s, i) => (
-            <Line key={s} type="monotone" dataKey={s} stroke={pal.series[i % pal.series.length]}
-              strokeWidth={2.5} dot={{ r: 3, strokeWidth: 0, fill: pal.series[i % pal.series.length] }}
-              activeDot={{ r: 5 }} />
+            <Line key={s} type="monotone" dataKey={s} stroke={sc[i % sc.length]}
+              strokeWidth={2.5} dot={{ r: 3, strokeWidth: 0, fill: sc[i % sc.length] }}
+              activeDot={{ r: 5 }}>
+              {V.on && <LabelList dataKey={s} content={pointLabel} />}
+            </Line>
           ))}
         </LineChart>
       </ResponsiveContainer>
@@ -347,39 +432,30 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
 <\/script>`;
   }
   const labels = cfg.rows.map((r) => r.label);
-  const isStacked = type === "stacked";
-  const horiz = isStacked ? cfg.orient === "h" : type === "hbar";
-  const pct = isStacked && !!cfg.pct;
+  const sc = seriesColorsOf(pal, cfg);
   const single = cfg.series.length === 1 && (type === "bar" || type === "hbar");
   const ramp = single ? valueRamp(pal, cfg.rows.map((r) => r[cfg.series[0]])) : null;
-  const totals = cfg.rows.map((r) => cfg.series.reduce((acc, ser) => acc + toNum(r[ser]), 0));
-  const datasets = cfg.series.map((sname, i) => ({
-    label: sname,
-    data: cfg.rows.map((r, ri) => { const v = toNum(r[sname]); return pct ? (totals[ri] ? (v / totals[ri]) * 100 : 0) : v; }),
-    raw: cfg.rows.map((r) => toNum(r[sname])),
-    backgroundColor: single ? ramp : pal.series[i % pal.series.length],
-    borderColor: isStacked ? pal.paper : (single ? ramp : pal.series[i % pal.series.length]),
-    borderWidth: type === "line" ? 2.5 : (isStacked ? 1.5 : 0),
-    borderRadius: type === "line" ? 0 : (isStacked ? 2 : 4),
-    stack: isStacked ? "a" : undefined,
+  const datasets = cfg.series.map((s, i) => ({
+    label: s, data: cfg.rows.map((r) => toNum(r[s])),
+    backgroundColor: single ? ramp : sc[i % sc.length],
+    borderColor: single ? ramp : sc[i % sc.length],
+    borderWidth: type === "line" ? 2.5 : 0, borderRadius: type === "line" ? 0 : 4,
     tension: 0.35, pointRadius: 3, fill: false,
   }));
   const cjsType = type === "line" ? "line" : "bar";
-  const indexAxis = horiz ? "y" : "x";
-  const inlineMode = isStacked ? "stacked" : (single ? "single" : "off");
+  const indexAxis = type === "hbar" ? "y" : "x";
+  const V = vlOpts(cfg, pal);
   const config = { type: cjsType, data: { labels, datasets }, options: {
     indexAxis, responsive: true, maintainAspectRatio: false,
-    layout: { padding: { top: 8, right: 8 } },
-    plugins: { legend: { display: cfg.series.length > 1, position: "top", align: "start", labels: { color: pal.ink, font: { family: "system-ui, sans-serif" }, boxWidth: 12, boxHeight: 12, padding: 14 } } },
+    plugins: { legend: { display: cfg.series.length > 1, labels: { color: pal.ink, font: { family: "system-ui, sans-serif" } } } },
     scales: {
-      x: { stacked: isStacked, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
-      y: { stacked: isStacked, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
+      x: { grid: { display: indexAxis === "y" }, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
+      y: { grid: { color: pal.grid }, ticks: { font: { family: "system-ui, sans-serif" }, color: pal.muted } },
     },
   } };
   return `<!doctype html><meta charset="utf-8">
 <style>html,body{height:100%;margin:0}*{box-sizing:border-box}</style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"><\/script>
-<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2"><\/script>
 <div style="font-family:${sansEmbed};background:${pal.paper};border:1px solid ${pal.grid};border-radius:12px;height:100%;display:flex;flex-direction:column;padding:3.5% 4%">
   <div style="border-top:3px solid ${pal.accent};padding-top:10px;margin-bottom:6px">
     <div style="font-family:${sansEmbed};font-size:clamp(14px,2.5vw,20px);color:${pal.ink};font-weight:700">${cfg.title}</div>
@@ -394,12 +470,7 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
 (function(){
   var cc = ${JSON.stringify(config)};
   var unit = ${JSON.stringify(cfg.unit || "")};
-  var stacked = ${JSON.stringify(isStacked)};
-  var horiz = ${JSON.stringify(horiz)};
-  var pct = ${JSON.stringify(pct)};
-  var inline = ${JSON.stringify(inlineMode)};
-  var ink = ${JSON.stringify(pal.ink)};
-  var grid = ${JSON.stringify(pal.grid)};
+  var VL = ${JSON.stringify({ on: V.on, size: V.size, inside: V.inside, fixed: V.fixed, ink: pal.ink })};
   function fmtTick(n){
     var v = (typeof n === "number" && isFinite(n)) ? (Number.isInteger(n) ? n : n.toFixed(1)) : n;
     if (unit === "%") return v + "%";
@@ -407,54 +478,48 @@ function embedDoc(type, cfg, pal = PALETTES.cream) {
     if (unit === "$M") return "$" + v + "M";
     return "" + v;
   }
-  function fmtPlain(n){ return (typeof n === "number" && isFinite(n)) ? (Number.isInteger(n) ? "" + n : n.toFixed(1)) : ("" + n); }
-  function bgOf(ds, di){ var b = ds.backgroundColor; return Array.isArray(b) ? b[di] : b; }
-  function textOn(hex){ var h = String(hex).replace("#",""); var r = parseInt(h.substr(0,2),16), g = parseInt(h.substr(2,2),16), b = parseInt(h.substr(4,2),16); var L = (0.299*r + 0.587*g + 0.114*b)/255; return L > 0.6 ? ink : "#FFFFFF"; }
-  var va = horiz ? "x" : "y";
-  var ca = horiz ? "y" : "x";
-  cc.options.scales[ca].grid = { display: false };
-  cc.options.scales[ca].border = { display: true, color: grid };
-  if (horiz) cc.options.scales[ca].ticks.autoSkip = false;
-  if (stacked) {
-    cc.options.scales[va].display = false;
-    cc.options.scales[va].min = 0;
-    if (pct) cc.options.scales[va].max = 100;
-  } else {
-    cc.options.scales[va].grid = { color: grid };
-    cc.options.scales[va].ticks.callback = function(value){ return fmtTick(value); };
-  }
-  if (window.ChartDataLabels) Chart.register(ChartDataLabels);
+  var va = cc.options.indexAxis === "y" ? "x" : "y";
+  cc.options.scales[va].ticks.callback = function(value){ return fmtTick(value); };
+  if (cc.options.indexAxis === "y") cc.options.scales.y.ticks.autoSkip = false;
   cc.options.plugins = cc.options.plugins || {};
-  if (inline === "off") {
-    cc.options.plugins.datalabels = { display: false };
-  } else {
-    cc.options.plugins.datalabels = {
-      clamp: true,
-      color: function(c){ return textOn(bgOf(c.dataset, c.dataIndex)); },
-      font: function(c){ return { family: "-apple-system, system-ui, sans-serif", weight: inline === "single" ? "800" : "700", size: inline === "single" ? 20 : 13 }; },
-      anchor: inline === "stacked" ? "center" : "end",
-      align: inline === "stacked" ? "center" : "start",
-      offset: inline === "stacked" ? 0 : 8,
-      formatter: function(value, c){
-        var raw = c.dataset.raw ? c.dataset.raw[c.dataIndex] : value;
-        if (inline === "stacked") return pct ? (Math.round(value) + "%") : fmtPlain(raw);
-        return fmtTick(raw);
+  cc.options.plugins.tooltip = Object.assign({}, cc.options.plugins.tooltip, { callbacks: { label: function(ctx){ var val = fmtTick(ctx.parsed[va]); return ctx.dataset.label ? ctx.dataset.label + ": " + val : val; } } });
+  if (VL.on) {
+    // reserve room outside the bar/point so a label can never clip
+    cc.options.layout = { padding: cc.options.indexAxis === "y"
+      ? (VL.inside ? {} : { right: VL.size * 3.4 })
+      : { top: VL.size + 14 } };
+    Chart.register({
+      id: "tmvalues",
+      afterDatasetsDraw: function (chart) {
+        function lum(hex){ try { var h=String(hex).replace("#",""); if(h.length===3) h=h[0]+h[0]+h[1]+h[1]+h[2]+h[2];
+          var r=parseInt(h.slice(0,2),16),g=parseInt(h.slice(2,4),16),b=parseInt(h.slice(4,6),16);
+          return (0.299*r+0.587*g+0.114*b)/255; } catch(e){ return 1; } }
+        var ctx = chart.ctx, horiz = chart.options.indexAxis === "y", isLine = chart.config.type === "line";
+        ctx.save();
+        ctx.font = "700 " + VL.size + "px system-ui, -apple-system, sans-serif";
+        chart.data.datasets.forEach(function (ds, di) {
+          var meta = chart.getDatasetMeta(di); if (meta.hidden) return;
+          meta.data.forEach(function (el, i) {
+            var raw = ds.data[i]; if (raw == null || !isFinite(raw)) return;
+            var txt = fmtTick(raw);
+            var bg = Array.isArray(ds.backgroundColor) ? ds.backgroundColor[i] : ds.backgroundColor;
+            ctx.fillStyle = VL.fixed || ((VL.inside && !isLine) ? (lum(bg) < 0.62 ? "#FFFFFF" : VL.ink) : VL.ink);
+            if (isLine) { ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(txt, el.x, el.y - 7); }
+            else if (horiz) {
+              ctx.textBaseline = "middle";
+              if (VL.inside) { ctx.textAlign = "right"; ctx.fillText(txt, el.x - 7, el.y); }
+              else { ctx.textAlign = "left"; ctx.fillText(txt, el.x + 7, el.y); }
+            } else {
+              ctx.textAlign = "center";
+              if (VL.inside) { ctx.textBaseline = "top"; ctx.fillText(txt, el.x, el.y + 5); }
+              else { ctx.textBaseline = "bottom"; ctx.fillText(txt, el.x, el.y - 6); }
+            }
+          });
+        });
+        ctx.restore();
       },
-      display: function(c){
-        var el = c.chart.getDatasetMeta(c.datasetIndex).data[c.dataIndex];
-        if (!el) return false;
-        var len = horiz ? Math.abs(el.x - el.base) : Math.abs(el.base - el.y);
-        if (inline === "single") return len >= (horiz ? 64 : 30);
-        return len >= 16;
-      }
-    };
+    });
   }
-  cc.options.plugins.tooltip = { callbacks: { label: function(ctx){
-    var raw = ctx.dataset.raw ? ctx.dataset.raw[ctx.dataIndex] : ctx.parsed[va];
-    var t = fmtTick(raw);
-    if (stacked && pct) t += " (" + Math.round(ctx.parsed[va]) + "%)";
-    return ctx.dataset.label ? ctx.dataset.label + ": " + t : t;
-  } } };
   new Chart(document.getElementById("c"), cc);
 })();
 <\/script>`;
@@ -474,7 +539,6 @@ const TYPES = [
   { id: "bar", label: "Comparison" },
   { id: "hbar", label: "Ranking" },
   { id: "stat", label: "Big stat" },
-  { id: "stacked", label: "Stacked" },
 ];
 
 /* ============================================================
@@ -553,26 +617,41 @@ function drawPlot(ctx, type, cfg, pal, x, y, w, h) {
   let vmax = Math.max(...vals, 0), vmin = Math.min(...vals, 0);
   if (vmax === vmin) vmax = vmin + 1;
   const single = series.length === 1 && (type === "bar" || type === "hbar");
+  const sc = seriesColorsOf(pal, cfg);
   const ramp = single ? valueRamp(pal, rows.map((r) => r[series[0]])) : null;
-  const colorFor = (si, ri) => (single ? ramp[ri] : pal.series[si % pal.series.length]);
+  const colorFor = (si, ri) => (single ? ramp[ri] : sc[si % sc.length]);
+  const V = vlOpts(cfg, pal);
+  const vText = (txt, px, py, fill, align, baseline) => {
+    ctx.save();
+    ctx.font = `700 ${V.size}px ${SYS}`; ctx.fillStyle = fill;
+    ctx.textAlign = align; ctx.textBaseline = baseline;
+    ctx.fillText(txt, px, py); ctx.restore();
+  };
   ctx.save();
   ctx.font = `400 11px ${SYS}`;
   ctx.textBaseline = "middle";
   if (type === "hbar") {
-    const labelW = 104, plotX = x + labelW, plotW = w - labelW;
+    const labelW = 104, valW = V.on && !V.inside ? V.size * 3.4 : 0;
+    const plotX = x + labelW, plotW = w - labelW - valW;
     const v0 = Math.min(0, vmin), span = (vmax - v0) || 1;
     const sx = (v) => plotX + plotW * ((v - v0) / span);
     const band = h / rows.length, barH = band * 0.62;
     rows.forEach((r, ri) => {
       const cy = y + band * ri + band / 2, x0 = sx(0), x1 = sx(toNum(r[series[0]]));
-      ctx.fillStyle = colorFor(0, ri);
+      const fill = colorFor(0, ri);
+      ctx.fillStyle = fill;
       roundRectPath(ctx, Math.min(x0, x1), cy - barH / 2, Math.max(1, Math.abs(x1 - x0)), barH, 4); ctx.fill();
       ctx.fillStyle = pal.muted; ctx.textAlign = "right"; ctx.fillText(String(r.label), x + labelW - 8, cy);
+      if (V.on) {
+        const txt = fmt(toNum(r[series[0]]), cfg.unit), col = vlFill(V, pal, fill);
+        V.inside ? vText(txt, Math.max(x0, x1) - 7, cy, col, "right", "middle")
+                 : vText(txt, Math.max(x0, x1) + 7, cy, col, "left", "middle");
+      }
     });
     ctx.restore(); return;
   }
-  const gutterL = 40, gutterB = 20;
-  const plotX = x + gutterL, plotW = w - gutterL, plotY = y, plotH = h - gutterB;
+  const gutterL = 40, gutterB = 20, vpad = V.on && !V.inside ? V.size + 12 : 0;
+  const plotX = x + gutterL, plotW = w - gutterL, plotY = y + vpad, plotH = h - gutterB - vpad;
   const span = (vmax - vmin) || 1, yPx = (v) => plotY + plotH * (1 - (v - vmin) / span);
   ctx.strokeStyle = pal.grid; ctx.lineWidth = 1; ctx.textAlign = "right"; ctx.fillStyle = pal.muted;
   for (let t = 0; t <= 4; t++) {
@@ -589,17 +668,26 @@ function drawPlot(ctx, type, cfg, pal, x, y, w, h) {
     rows.forEach((r, ri) => series.forEach((s, si) => {
       const cx = plotX + band * ri + band / 2;
       const bx = single ? cx - bw / 2 : cx - (series.length * bw) / 2 + si * bw;
-      const py = yPx(toNum(r[s]));
-      ctx.fillStyle = colorFor(si, ri);
+      const py = yPx(toNum(r[s])), fill = colorFor(si, ri);
+      ctx.fillStyle = fill;
       roundRectPath(ctx, bx, Math.min(py, y0), Math.max(1, bw - 2), Math.max(1, Math.abs(py - y0)), 4); ctx.fill();
+      if (V.on) {
+        const txt = fmt(toNum(r[s]), cfg.unit), col = vlFill(V, pal, fill), mx = bx + (bw - 2) / 2;
+        V.inside ? vText(txt, mx, Math.min(py, y0) + 5, col, "center", "top")
+                 : vText(txt, mx, Math.min(py, y0) - 6, col, "center", "bottom");
+      }
     }));
   } else {
     series.forEach((s, si) => {
-      const col = pal.series[si % pal.series.length];
+      const col = sc[si % sc.length];
       ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.beginPath();
       rows.forEach((r, ri) => { const cx = plotX + band * ri + band / 2, py = yPx(toNum(r[s])); ri === 0 ? ctx.moveTo(cx, py) : ctx.lineTo(cx, py); });
       ctx.stroke(); ctx.fillStyle = col;
       rows.forEach((r, ri) => { const cx = plotX + band * ri + band / 2, py = yPx(toNum(r[s])); ctx.beginPath(); ctx.arc(cx, py, 3, 0, Math.PI * 2); ctx.fill(); });
+      if (V.on) rows.forEach((r, ri) => {
+        const cx = plotX + band * ri + band / 2, py = yPx(toNum(r[s]));
+        vText(fmt(toNum(r[s]), cfg.unit), cx, py - 7, V.fixed || pal.ink, "center", "bottom");
+      });
     });
   }
   ctx.restore();
@@ -658,6 +746,7 @@ function blankChart() {
     title: "", subtitle: "", source: "Source: __ · The Measure", unit: "$M",
     rows: [{ label: "Item A", Value: 0 }, { label: "Item B", Value: 0 }], series: ["Value"],
     statValue: "+0%", statLabel: "", statDelta: "",
+    showValues: false, valueSize: 12, valueColor: "auto", valuePos: "auto",
     palette: "white", provenance: "", createdAt: now(), updatedAt: now(),
   };
 }
@@ -723,7 +812,6 @@ const ARCHE = [
   { id: "bar", label: "Comparison", hint: "values across categories" },
   { id: "hbar", label: "Ranking", hint: "ordered, largest first" },
   { id: "stat", label: "Single number", hint: "one figure that matters" },
-  { id: "stacked", label: "Stacked", hint: "parts of a whole, over time" },
 ];
 
 function Spinner({ label }) {
@@ -852,6 +940,7 @@ export default function App() {
   const [imgMime, setImgMime] = useState(""); const [imgBusy, setImgBusy] = useState(false); const [imgErr, setImgErr] = useState("");
   const [blankChose, setBlankChose] = useState(false); // has a type been picked in Start blank?
   const [copied, setCopied] = useState(false);
+  const [hdr, setHdr] = useState(null);
   const [pngBusy, setPngBusy] = useState(false);
   const [savedFlash, setSavedFlash] = useState(false);
   const previewRef = useRef(null);
@@ -888,6 +977,21 @@ export default function App() {
   const saveAndClose = async () => { await saveDraft(); setView("library"); };
 
   const updateCell = (ri, key, val) => patch({ rows: draft.rows.map((r, i) => i === ri ? { ...r, [key]: val } : r) });
+  // rename a series column: renames the key in every row too, so the legend,
+  // tooltip, embed and PNG all pick up the new name at once.
+  const renameSeries = (i, raw) => {
+    const nm = String(raw || "").trim(), old = draft.series[i];
+    if (!nm || nm === old || draft.series.some((s, ix) => ix !== i && s === nm)) return false;
+    const series = draft.series.map((s, ix) => ix === i ? nm : s);
+    const rows = draft.rows.map((r) => {
+      const o = { label: r.label };
+      series.forEach((s, ix) => { o[s] = r[draft.series[ix]]; });
+      return o;
+    });
+    const p = { series, rows };
+    if (draft.archetype === "stat" && draft.statLabel === old) p.statLabel = nm;
+    patch(p); return true;
+  };
   const addRow = () => { const b = { label: "New" }; draft.series.forEach((s) => (b[s] = 0)); patch({ rows: [...draft.rows, b] }); };
   const removeRow = (ri) => patch({ rows: draft.rows.filter((_, i) => i !== ri) });
 
@@ -1072,7 +1176,15 @@ export default function App() {
         </div>
         <div style={{ border: `1px solid ${BRAND.grid}`, borderRadius: 8, overflow: "hidden" }}>
           <div style={{ display: "grid", gridTemplateColumns: `1.3fr ${draft.series.map(() => "1fr").join(" ")} 28px`, background: "#F2EFEA", fontSize: 11, fontWeight: 600, color: BRAND.muted }}>
-            <div style={cellHead}>Label</div>{draft.series.map((s) => <div key={s} style={cellHead}>{s}</div>)}<div style={cellHead}></div>
+            <div style={cellHead}>Label</div>{draft.series.map((s, si) => (
+              <input key={si} value={hdr && hdr.i === si ? hdr.val : s}
+                onChange={(e) => setHdr({ i: si, val: e.target.value })}
+                onFocus={() => setHdr({ i: si, val: s })}
+                onBlur={() => { if (hdr && hdr.i === si) renameSeries(si, hdr.val); setHdr(null); }}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); if (e.key === "Escape") { setHdr(null); e.target.blur(); } }}
+                title="Rename this column — updates the legend, tooltip, embed and PNG"
+                style={{ ...cellInput, fontSize: 11, fontWeight: 600, color: BRAND.muted, cursor: "text" }} />
+            ))}<div style={cellHead}></div>
           </div>
           {draft.rows.map((r, ri) => (
             <div key={ri} style={{ display: "grid", gridTemplateColumns: `1.3fr ${draft.series.map(() => "1fr").join(" ")} 28px`, borderTop: `1px solid ${BRAND.grid}` }}>
@@ -1086,34 +1198,6 @@ export default function App() {
     );
   }
 
-  function typePicker() {
-    const cur = draft.archetype;
-    const orient = draft.orient || "v";
-    return (
-      <div style={{ marginBottom: 14 }}>
-        <div style={ctxLbl}>CHART TYPE</div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
-          {TYPES.map((t) => (
-            <button key={t.id} onClick={() => patch({ archetype: t.id })} style={{ padding: "6px 11px", borderRadius: 7, fontSize: 12.5, cursor: "pointer", fontFamily: BRAND.fontBody,
-              border: `1px solid ${cur === t.id ? BRAND.ink : BRAND.grid}`, background: cur === t.id ? BRAND.ink : "#fff", color: cur === t.id ? "#fff" : BRAND.ink, fontWeight: cur === t.id ? 700 : 500 }}>{t.label}</button>
-          ))}
-        </div>
-        {cur === "stacked" && (
-          <div style={{ display: "flex", gap: 18, marginTop: 10, alignItems: "center", flexWrap: "wrap" }}>
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <span style={{ fontSize: 11.5, color: BRAND.muted }}>Orientation</span>
-              {[["v", "Vertical"], ["h", "Horizontal"]].map(([v, lbl]) => (
-                <button key={v} onClick={() => patch({ orient: v })} style={{ ...miniBtn, background: orient === v ? BRAND.ink : "#fff", color: orient === v ? "#fff" : BRAND.ink, border: `1px solid ${orient === v ? BRAND.ink : BRAND.grid}` }}>{lbl}</button>
-              ))}
-            </div>
-            <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: BRAND.ink, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!draft.pct} onChange={(e) => patch({ pct: e.target.checked })} /> Show as 100% (share)
-            </label>
-          </div>
-        )}
-      </div>
-    );
-  }
   function framingFields() {
     return (
       <>
@@ -1305,9 +1389,8 @@ export default function App() {
           {draft.provenance ? (
             <div style={{ fontSize: 11.5, color: "#8a5a00", background: "#FBF3DF", border: "1px solid #EAD9A8", borderRadius: 7, padding: "7px 10px", marginBottom: 12, lineHeight: 1.45 }}>{draft.provenance}</div>
           ) : null}
-          {typePicker()}
           {framingFields()}
-          <div style={{ marginTop: 14 }} />
+          <div style={{ fontSize: 11, color: BRAND.muted, marginTop: 8, lineHeight: 1.5 }}>Click a column heading to rename that series — the legend, tooltip, embed and PNG all follow.</div>
           {dataEditor()}
         </>
       );
@@ -1335,6 +1418,95 @@ export default function App() {
             </button>
           ))}
         </div>
+        {draft.archetype !== "stat" && (() => {
+          const vp = palOf(draft);
+          const on = !!draft.showValues, size = draft.valueSize || 12;
+          return (
+            <>
+              <div style={panelTitle}>Value labels</div>
+              <div style={{ fontSize: 12, color: BRAND.muted, marginBottom: 10, lineHeight: 1.5 }}>Prints the number on every bar and point — in the preview, the embed and the PNG alike. Labels sit outside the bar and the plot reserves room for them, so nothing clips.</div>
+              <button onClick={() => patch({ showValues: !on })} style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "9px 10px", borderRadius: 9,
+                border: `1px solid ${on ? BRAND.ink : BRAND.grid}`, background: "#fff", fontFamily: BRAND.fontBody, cursor: "pointer", marginBottom: on ? 10 : 18 }}>
+                <span style={{ width: 34, height: 20, borderRadius: 10, background: on ? BRAND.ink : "#DCD6CC", position: "relative", flexShrink: 0, transition: "background .15s" }}>
+                  <span style={{ position: "absolute", top: 2, left: on ? 16 : 2, width: 16, height: 16, borderRadius: 8, background: "#fff", transition: "left .15s" }} />
+                </span>
+                <span style={{ fontWeight: 700, fontSize: 13, color: BRAND.ink }}>Show values</span>
+              </button>
+              {on && (
+                <div style={{ marginBottom: 18 }}>
+                  <div style={impRow}><span style={impLbl}>Size</span>
+                    <input type="range" min={8} max={24} step={1} value={size}
+                      onChange={(e) => patch({ valueSize: +e.target.value })} style={{ flex: 1, accentColor: BRAND.accent }} />
+                    <span style={{ width: 34, textAlign: "right", fontSize: 12, color: BRAND.muted, fontVariantNumeric: "tabular-nums" }}>{size}px</span>
+                  </div>
+                  <div style={impRow}><span style={impLbl}>Color</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1, flexWrap: "wrap" }}>
+                      {VALUE_COLORS.map((c) => {
+                        const act = (draft.valueColor || "auto") === c.id;
+                        return (
+                          <button key={c.id} onClick={() => patch({ valueColor: c.id })} title={c.hint || c.name} style={{
+                            display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 8px", borderRadius: 6, cursor: "pointer",
+                            fontSize: 12, fontFamily: BRAND.fontBody, background: "#fff",
+                            border: `1px solid ${act ? BRAND.ink : BRAND.grid}`, color: act ? BRAND.ink : BRAND.muted, fontWeight: act ? 700 : 400 }}>
+                            <span style={{ width: 10, height: 10, borderRadius: 2, flexShrink: 0, border: `1px solid ${BRAND.grid}`,
+                              background: c.id === "auto" ? `linear-gradient(135deg, ${vp.ink} 50%, ${vp.paper} 50%)` : (vp[c.id] || vp.ink) }} />
+                            {c.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div style={impRow}><span style={impLbl}>Placement</span>
+                    <div style={{ display: "flex", gap: 6, flex: 1 }}>
+                      {VALUE_POS.map((p) => {
+                        const act = (draft.valuePos || "auto") === p.id;
+                        return (
+                          <button key={p.id} onClick={() => patch({ valuePos: p.id })} style={{
+                            padding: "4px 10px", borderRadius: 6, cursor: "pointer", fontSize: 12, fontFamily: BRAND.fontBody,
+                            border: `1px solid ${act ? BRAND.ink : BRAND.grid}`, background: act ? BRAND.ink : "#fff",
+                            color: act ? "#fff" : BRAND.muted, fontWeight: act ? 700 : 400 }}>{p.name}</button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 11, color: BRAND.muted, marginTop: 6, lineHeight: 1.5 }}>
+                    {(draft.valuePos || "auto") === "inside"
+                      ? "Inside: Auto color flips to white on dark fills so the number stays readable. Lines always label above the point."
+                      : "Outside is the safe default — use Inside only when the bars are long enough to hold the number."}
+                  </div>
+                </div>
+              )}
+            </>
+          );
+        })()}
+        {(draft.series || []).length > 1 && (
+          <>
+            <div style={panelTitle}>Series colors</div>
+            <div style={{ fontSize: 12, color: BRAND.muted, marginBottom: 10, lineHeight: 1.5 }}>How the lines/bars share color when a chart has more than one series.</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 18 }}>
+              {SERIES_MODES.map((m) => {
+                const mp = palOf(draft);
+                const cols = seriesColorsOf(mp, { colorMode: m.id }).slice(0, 4);
+                const active = (draft.colorMode || "categorical") === m.id;
+                return (
+                  <button key={m.id} onClick={() => patch({ colorMode: m.id })} style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 9, cursor: "pointer",
+                    border: `1px solid ${active ? BRAND.ink : BRAND.grid}`, background: "#fff", fontFamily: BRAND.fontBody }}>
+                    <span style={{ display: "flex", gap: 3, flexShrink: 0 }}>
+                      {cols.map((c, i) => <span key={i} style={{ width: 10, height: 22, borderRadius: 3, background: c, border: `1px solid ${BRAND.grid}` }} />)}
+                    </span>
+                    <span style={{ textAlign: "left", flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13, color: BRAND.ink }}>{m.name}</div>
+                      <div style={{ fontSize: 11, color: BRAND.muted }}>{m.desc}</div>
+                    </span>
+                    {active && <span style={{ color: BRAND.accent, fontSize: 14 }}>●</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
         {!framed && <div style={{ fontSize: 11.5, color: BRAND.accent, marginBottom: 10 }}>Heads up — add a takeaway headline and source in the Review step.</div>}
         <button onClick={saveDraft} style={{ ...actionBtn(BRAND.ink), width: "100%", justifyContent: "center" }}>{savedFlash ? "Saved ✓" : "Save to library"}</button>
         <div style={{ fontSize: 11, color: BRAND.muted, marginTop: 12, lineHeight: 1.5 }}>Edit the data later and the embed updates everywhere; a palette change re-renders the chart and its exports.</div>
